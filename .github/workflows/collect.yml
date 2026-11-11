@@ -47,3 +47,21 @@ jobs:
           if [ -f db/eu_${{ matrix.file }}.json ]; then
             gh release upload data db/eu_${{ matrix.file }}.json --clobber
           fi
+
+  calibrate:
+    name: Valeur CP des stats
+    needs: collect
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
+      - run: gh release download data -p "eu_*.json" -D db
+      - run: python tools/calibrate.py db db/stat_weights.json
+      - run: gh release upload data db/stat_weights.json --clobber

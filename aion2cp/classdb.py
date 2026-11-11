@@ -53,6 +53,14 @@ def download_shared(region: str, class_name: str) -> bool:
     if not SHARED_OWNER:
         return False
     name = f"{region}_{class_name.lower().replace(' ', '')}.json"
+    try:  # valeurs CP des stats, recalculées chaque nuit sur toutes les classes
+        r = requests.get(SHARED_URL.format(owner=SHARED_OWNER, file="stat_weights.json"), timeout=30)
+        if r.status_code == 200 and r.json().get("weights"):
+            from .cpvalue import reload_weights
+            write_json(usr("stat_weights.json"), r.json())
+            reload_weights()
+    except (requests.RequestException, ValueError):
+        pass
     try:
         r = requests.get(SHARED_URL.format(owner=SHARED_OWNER, file=name), timeout=90)
         if r.status_code != 200:
