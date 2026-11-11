@@ -82,7 +82,7 @@ class CPModel:
     def __init__(self):
         self.ok = False
         self.coef, self.lo, self.hi = {}, {}, {}
-        self.n, self.r2, self.mae = 0, 0.0, 0.0
+        self.n, self.r2, self.mae, self.intercept = 0, 0.0, 0.0, 0.0
 
     @staticmethod
     def _nnls(X, y):
@@ -108,6 +108,7 @@ class CPModel:
         X = np.array([[s["f"].get(k, 0) for k in self.FEATS] for s in rows], float)
         y = np.array([s["cp"] for s in rows], float)
         coef, b0 = self._nnls(X, y)
+        self.intercept = float(b0)
         pred = X @ coef + b0
         self.r2 = float(1 - ((y - pred) ** 2).sum() / max(((y - y.mean()) ** 2).sum(), 1e-9))
         self.mae = float(np.abs(y - pred).mean())

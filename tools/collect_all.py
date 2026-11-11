@@ -27,7 +27,10 @@ def main():
     a = ap.parse_args()
     api = AionAPI(cache_dir=os.path.join(ROOT, ".cache"), rate=6.0)  # débit prudent
     h = classdb.Harvester(api)
-    classdb.TOP_N = classdb.TOP_N_MAX = 30  # base partagée : plus de builds détaillés
+    # base partagée : bien plus large que la collecte locale (qui lit 160 joueurs)
+    classdb.SAMPLE_TARGET = int(os.environ.get("SAMPLE_TARGET", "1000"))
+    classdb.SEARCH_PAGES = 8
+    classdb.TOP_N = classdb.TOP_N_MAX = classdb.TOP_ADD = int(os.environ.get("TOP_N", "60"))
     os.makedirs(OUT, exist_ok=True)
     for region in a.regions.split(","):
         for cls in a.classes.split(","):

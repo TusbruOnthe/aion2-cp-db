@@ -55,7 +55,11 @@ class RateLimiter:
         with self.lock:
             self.rate = min(self.max_rate, self.rate + 0.05)
 
-    def wait(self):
+    def wait(self, yield_to=None):
+        # les requêtes de la collecte (threads « harvest… ») laissent passer celles de ton perso
+        if yield_to is not None and threading.current_thread().name.startswith("harvest"):
+            while yield_to():
+                time.sleep(0.15)
         p = self.pause_until - time.time()
         if p > 0:
             time.sleep(p)
@@ -78,9 +82,11 @@ class AionAPI:
         self.cache_dir = cache_dir
         self.timeout = timeout
         self.limiter = RateLimiter(rate)
+        self.user_limiter = RateLimiter(16.0)  # ton perso : petite rafale plus rapide
         self._local = threading.local()
         self.calls = 0
         self.throttled = 0
+        self.user_active = 0  # > 0 pendant le chargement de ton perso : la collecte attend
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
 
@@ -114,7 +120,8 @@ class AionAPI:
                 pass
         last = None
         for attempt in range(5):
-            self.limiter.wait()
+            lim = self.user_limiter if threading.current_thread().name.startswith("user") else self.limiter
+            lim.wait(lambda: self.user_active > 0)
             try:
                 self.calls += 1
                 r = self.session.get(url, params=params, timeout=self.timeout)
@@ -125,13 +132,13 @@ class AionAPI:
             if r.status_code == 429:
                 self.throttled += 1
                 last = ApiError("Le site officiel limite les requêtes (429) : réessaie dans une minute.")
-                self.limiter.slow_down(3.0 * (attempt + 1))
+                lim.slow_down(3.0 * (attempt + 1))
                 continue
             if r.status_code >= 500:
                 last = ApiError(f"Le site officiel a répondu {r.status_code}.")
                 time.sleep(1.5 * (attempt + 1))
                 continue
-            self.limiter.ok()
+            lim.ok()
             if r.status_code != 200:
                 raise ApiError(f"Le site officiel a répondu {r.status_code}.")
             try:
@@ -229,29 +236,48 @@ class AionAPI:
         return self._get(f"{SITE}/api/character/daevanion/detail", p, ttl=ttl)
 
     # --------------------------------------------------------------- helpers
-    def load_full(self, region, cid, sid, ttl=600, items=True, boards=True, pool=None,
-                  only_random=False) -> dict:
+    def load_full(self, region, cid, sid, ttl=600, items=True, boards=True, pool=None, workers=12,
+                  only_random=False, hint: dict | None = None) -> dict:
         """info + équipement + détail de chaque objet (+ plateaux Daevanion), en parallèle.
-        only_random : saute ceinture, amulette et runes (pas de lignes à roll ni de pierres)."""
+        only_random : saute ceinture, amulette et runes (pas de lignes à roll ni de pierres).
+        hint : dernier build connu ; ses objets et plateaux sont demandés EN MÊME TEMPS que la fiche
+        (une seule vague de requêtes au lieu de deux). Seuls les objets changés sont redemandés."""
         from concurrent.futures import ThreadPoolExecutor
         own = pool is None
-        ex = pool or ThreadPoolExecutor(12)
+        ex = pool or ThreadPoolExecutor(workers, thread_name_prefix="user")
+
+        def eq_list(eq):
+            return ((eq or {}).get("equipment") or {}).get("equipmentList") or []
+
+        def key(e):
+            return (e.get("slotPos"), e.get("id"), e.get("enchantLevel") or 0, e.get("exceedLevel") or 0)
+
+        def item_job(e):
+            return ex.submit(self.item, region, cid, sid, e["id"], e["slotPos"], e.get("enchantLevel") or 0,
+                             e.get("exceedLevel") or 0, ttl)
         try:
             f_info = ex.submit(self.info, region, cid, sid, ttl)
             f_eq = ex.submit(self.equipment, region, cid, sid, ttl)
+            early_items, early_boards = {}, {}
+            if hint:
+                if items:
+                    early_items = {key(e): item_job(e) for e in eq_list(hint.get("equipment"))}
+                if boards:
+                    early_boards = {str(b["id"]): ex.submit(self.daevanion, region, cid, sid, b["id"], ttl)
+                                    for b in ((hint.get("info") or {}).get("daevanion") or {}).get("boardList") or []
+                                    if b.get("open")}
             out = {"info": f_info.result(), "equipment": f_eq.result(), "items": {}, "daevanion": {}}
             jobs = []
             if items:
-                for e in ((out["equipment"].get("equipment") or {}).get("equipmentList") or []):
+                for e in eq_list(out["equipment"]):
                     if only_random and e.get("slotPos") in (17, 22, 23, 24):
                         continue
-                    jobs.append(("items", str(e["slotPos"]), ex.submit(
-                        self.item, region, cid, sid, e["id"], e["slotPos"], e.get("enchantLevel") or 0,
-                        e.get("exceedLevel") or 0, ttl)))
+                    jobs.append(("items", str(e["slotPos"]), early_items.get(key(e)) or item_job(e)))
             if boards:
                 for b in ((out["info"].get("daevanion") or {}).get("boardList") or []):
                     if b.get("open"):
-                        jobs.append(("daevanion", str(b["id"]), ex.submit(self.daevanion, region, cid, sid, b["id"], ttl)))
+                        jobs.append(("daevanion", str(b["id"]), early_boards.get(str(b["id"])) or
+                                     ex.submit(self.daevanion, region, cid, sid, b["id"], ttl)))
             for kind, key, fut in jobs:
                 try:
                     out[kind][key] = fut.result()

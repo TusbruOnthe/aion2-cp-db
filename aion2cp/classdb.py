@@ -20,7 +20,8 @@ from .build import light_sample, make_build, norm
 from .paths import read_json, usr, write_json
 
 KEYWORDS = ["a", "e", "i", "o", "n", "r", "l", "s", "u", "t", "k", "m"]
-SAMPLE_TARGET = 160
+SAMPLE_TARGET = 160     # collecte locale (secours) ; la base partagée en lit 1 000
+SEARCH_PAGES = 2        # pages de 40 joueurs par mot-clé
 TOP_N = 15          # première collecte (rapide)
 TOP_N_MAX = 30      # les mises à jour suivantes en ajoutent jusqu'à ce total
 TOP_ADD = 10
@@ -117,9 +118,9 @@ class Harvester:
         pcids = api.class_pcids(region, class_name)
         self._say("Recherche des joueurs", 0, 1, "Recherche des joueurs de ta classe au niveau max…")
         cands = {}
-        with ThreadPoolExecutor(24) as ex:
+        with ThreadPoolExecutor(24, thread_name_prefix="harvest") as ex:
             futs = [ex.submit(api.search, region, kw, None, page, 40, pcids or None, "level", 86400)
-                    for kw in KEYWORDS for page in (1, 2)]
+                    for kw in KEYWORDS for page in range(1, SEARCH_PAGES + 1)]
             for i, f in enumerate(as_completed(futs)):
                 try:
                     rows, _ = f.result()
@@ -192,7 +193,7 @@ class Harvester:
             # plusieurs joueurs à la fois ; leurs requêtes partagent le pool `ex`.
             # Chaque build lu est sauvegardé tout de suite : les conseils s'affinent au fil de l'eau,
             # et une collecte interrompue (site saturé, appli fermée) reprend là où elle s'est arrêtée.
-            with ThreadPoolExecutor(4) as outer:
+            with ThreadPoolExecutor(4, thread_name_prefix="harvest-o") as outer:
                 for f in as_completed([outer.submit(full, s) for s in need]):
                     done += 1
                     try:

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,6 +24,7 @@ jobs:
       - run: pip install requests numpy
       - run: python tools/collect_all.py --regions eu
       - name: Publier les bases
+        if: always()   # on publie même si une classe a échoué : rien n'est perdu
         run: |
           git config user.name "aion2cp-bot"
           git config user.email "aion2cp-bot@users.noreply.github.com"
