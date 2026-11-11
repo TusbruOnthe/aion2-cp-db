@@ -5,6 +5,8 @@ ces fichiers au lieu de refaire la collecte sur chaque PC.
 Usage : python tools/collect_all.py [--regions eu,nae] [--classes Cleric,Ranger]
 """
 import argparse
+import gzip
+import json
 import os
 import sys
 import time
@@ -50,6 +52,11 @@ def main():
                 continue
             db.pop("t_samples", None)
             write_json(os.path.join(OUT, f"{region}_{cls.lower()}.json"), db)
+            # version allégée et compressée pour l'appli (≈ 10 fois plus petite)
+            slim = {k: db.get(k) for k in ("class", "region", "t", "samples", "top", "agg")}
+            slim["moves"] = [m for m in db.get("moves") or [] if time.time() - m["t"] < 8 * 86400]
+            with gzip.open(os.path.join(OUT, f"{region}_{cls.lower()}.app.json.gz"), "wt", encoding="utf-8") as f:
+                json.dump(slim, f, ensure_ascii=False, separators=(",", ":"))
             print(f"{region} {cls} : {len(db['samples'])} joueurs, {len(db['top'])} builds, "
                   f"{time.time() - t:.0f} s, {api.calls} requêtes, {api.throttled} refus", flush=True)
 

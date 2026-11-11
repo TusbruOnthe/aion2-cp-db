@@ -87,6 +87,7 @@ class AionAPI:
         self.calls = 0
         self.throttled = 0
         self.user_active = 0  # > 0 pendant le chargement de ton perso : la collecte attend
+        self._ua_lock = threading.Lock()
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
 
@@ -161,6 +162,14 @@ class AionAPI:
 
     def _char(self, region: str, cid: str, sid: int) -> dict:
         return {"lang": self.lang, "region": region, "serverId": sid, "characterId": cid}
+
+    def user_begin(self):
+        with self._ua_lock:
+            self.user_active += 1
+
+    def user_end(self):
+        with self._ua_lock:
+            self.user_active = max(0, self.user_active - 1)
 
     # ------------------------------------------------------------- endpoints
     def servers(self, region: str) -> list[dict]:

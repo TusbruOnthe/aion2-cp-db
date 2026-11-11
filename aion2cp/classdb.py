@@ -66,11 +66,18 @@ def download_shared(region: str, class_name: str) -> bool:
     except (requests.RequestException, ValueError):
         pass
     try:
-        r = requests.get(SHARED_URL.format(owner=SHARED_OWNER, file=name), timeout=90)
-        if r.status_code != 200:
-            return False
-        db = r.json()
-    except (requests.RequestException, ValueError):
+        import gzip
+        import json
+        # version allégée et compressée (≈ 1 Mo) ; sinon la version complète
+        r = requests.get(SHARED_URL.format(owner=SHARED_OWNER, file=name.replace(".json", ".app.json.gz")), timeout=60)
+        if r.status_code == 200:
+            db = json.loads(gzip.decompress(r.content).decode("utf-8"))
+        else:
+            r = requests.get(SHARED_URL.format(owner=SHARED_OWNER, file=name), timeout=90)
+            if r.status_code != 200:
+                return False
+            db = r.json()
+    except (requests.RequestException, ValueError, OSError):
         return False
     local = load(region, class_name) or {}
     if not db.get("samples") or db.get("t", 0) <= local.get("t", 0):

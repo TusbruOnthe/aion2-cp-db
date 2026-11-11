@@ -45,7 +45,7 @@ jobs:
         if: always()   # même en cas d'arrêt en route : ce qui a été lu est gardé
         run: |
           if [ -f db/eu_${{ matrix.file }}.json ]; then
-            gh release upload data db/eu_${{ matrix.file }}.json --clobber
+            gh release upload data db/eu_${{ matrix.file }}.json db/eu_${{ matrix.file }}.app.json.gz --clobber
           fi
 
   calibrate:
