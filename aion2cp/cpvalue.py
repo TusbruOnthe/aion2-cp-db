@@ -44,8 +44,10 @@ def stat_weights() -> dict:
     global _WEIGHTS
     if _WEIGHTS is None:
         from .paths import read_json, res, usr
-        d = read_json(usr("stat_weights.json")) or read_json(res("data", "stat_weights.json")) or {}
-        _WEIGHTS = d
+        cands = [read_json(usr("stat_weights.json")) or {}, read_json(res("data", "stat_weights.json")) or {}]
+        # le plus récent des deux, et seulement au format actuel (calcul par familles)
+        cands = [c for c in cands if c.get("weights") and c.get("families")]
+        _WEIGHTS = max(cands, key=lambda c: c.get("t", 0)) if cands else {}
     return _WEIGHTS
 
 
