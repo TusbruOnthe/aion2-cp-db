@@ -102,7 +102,7 @@ def _top_entry(b: dict) -> dict:
                   "skills": [s["name"] for s in g["skills"]],
                   "stones": [[s["name"], s["v"], s["grade"]] for s in g["stones"]]} for g in b["gear"] if g["detail"]],
         "arcana": [{"cat": a["category"] or a["slot"], "card": a["name"], "grade": a["grade"], "ench": a["enchant"],
-                    "icon": a["icon"], "skills": [s["name"] for s in a["skills"]]} for a in b["arcana"]],
+                    "icon": a["icon"], "skills": [[s["name"], s["level"]] for s in a["skills"]]} for a in b["arcana"]],
         "stigmas": {s["name"]: s["level"] for s in b["stigma"] if s["equip"]},
         "skills": {s["name"]: s["level"] for s in b["active"] + b["passive"] if s["acquired"]},
         "f": b["features"],
@@ -282,7 +282,7 @@ def aggregate(tops: list[dict]) -> dict:
                                  "stones_n": 0, "ench": [], "items": Counter(), "cap": []})
     pool = defaultdict(lambda: defaultdict(list))  # groupe -> (stat, unité) -> [(niveau d'objet, valeur)]
     stig, skills = defaultdict(list), defaultdict(list)
-    arcana = defaultdict(lambda: {"n": 0, "cards": Counter(), "skills": Counter(), "icons": {}})
+    arcana = defaultdict(lambda: {"n": 0, "cards": Counter(), "skills": Counter(), "icons": {}, "lv": defaultdict(list)})
     for t in tops:
         for g in t["gear"]:
             s = slots[g["group"]]
@@ -304,7 +304,10 @@ def aggregate(tops: list[dict]) -> dict:
             x["cards"][a["card"]] += 1
             x["icons"][a["card"]] = a["icon"]
             for k in a["skills"]:
-                x["skills"][k] += 1
+                name, lv = (k[0], k[1]) if isinstance(k, list) else (k, None)  # anciens builds : sans niveau
+                x["skills"][name] += 1
+                if lv:
+                    x["lv"][name].append(lv)
         for k, v in t["stigmas"].items():
             stig[k].append(v)
         for k, v in t["skills"].items():
@@ -330,9 +333,17 @@ def aggregate(tops: list[dict]) -> dict:
         "stigmas": {k: {"pct": len(v) / max(n, 1), "med": _median(v)} for k, v in sorted(stig.items(), key=lambda kv: -len(kv[1]))},
         "skills": {k: {"pct": len(v) / max(n, 1), "med": _median(v)} for k, v in skills.items()},
         "arcana": {k: {"n": a["n"], "cards": {c: x / a["n"] for c, x in a["cards"].most_common()},
-                       "icons": a["icons"], "skills": {c: x / a["n"] for c, x in a["skills"].most_common(10)}}
+                       "icons": a["icons"], "skills": {c: x / a["n"] for c, x in a["skills"].most_common(10)},
+                       "levels": {c: _lv_range(v) for c, v in a["lv"].items() if len(v) >= 3}}
                    for k, a in arcana.items()},
     }
+
+
+def _lv_range(v):
+    """Niveaux d'un skill sur une carte Arcana chez les joueurs : [bas, médiane, haut, max, nb]."""
+    v = sorted(v)
+    q = lambda p: v[min(len(v) - 1, int(p * len(v)))]  # noqa: E731
+    return [q(0.25), q(0.5), q(0.75), v[-1], len(v)]
 
 
 def stat_range(agg: dict | None, group: str, name: str, unit: str, item_level: int) -> dict | None:
