@@ -19,18 +19,31 @@ from .api import AionAPI, ApiError
 from .build import light_sample, make_build, norm
 from .paths import read_json, usr, write_json
 
-KEYWORDS = ["a", "e", "i", "o", "n", "r", "l", "s", "u", "t", "k", "m"]
-SAMPLE_TARGET = 160     # collecte locale (secours) ; la base partagée en lit 1 000
+KEYWORDS = ["a", "e", "i", "o", "n", "r", "l", "s", "u", "t", "k", "m", "d", "h", "y", "c", "b", "g", "v", "z",
+            "p", "f", "j", "x", "w", "q"]
+SAMPLE_TARGET = 160     # collecte locale (secours) ; la base partagée en lit 6 000
 SEARCH_PAGES = 2        # pages de 40 joueurs par mot-clé
-TOP_N = 15          # première collecte (rapide)
+TOP_N = 15          # builds détaillés des meilleurs, première collecte (rapide)
 TOP_N_MAX = 30      # les mises à jour suivantes en ajoutent jusqu'à ce total
 TOP_ADD = 10
+DETAIL_SPREAD = 0   # builds détaillés en plus, répartis sur toute la plage de CP (base partagée : 170)
+
+
+def select_detail(samples: list[dict], n_top: int, n_spread: int) -> list[dict]:
+    """Les n_top meilleurs + n_spread joueurs répartis régulièrement sur le reste de la plage de CP,
+    pour que les conseils valent aussi pour les joueurs qui ne sont pas tout en haut."""
+    ordered = sorted(samples, key=lambda s: -s["cp"])
+    best, rest = ordered[:n_top], ordered[n_top:]
+    if n_spread and rest:
+        step = len(rest) / min(n_spread, len(rest))
+        best += [rest[int(i * step)] for i in range(min(n_spread, len(rest)))]
+    return best
 MAX_AGE = 3 * 86400       # au-delà : mise à jour automatique
 SAMPLE_TTL = 6 * 86400    # un joueur relu au plus tous les 6 jours
 
 
-SHARED_URL = "https://raw.githubusercontent.com/{owner}/aion2-cp-db/main/db/{file}"
-SHARED_OWNER = "TusbruOnthe"   # rempli à la création du dépôt
+SHARED_URL = "https://github.com/{owner}/aion2-cp-db/releases/download/data/{file}"
+SHARED_OWNER = "TusbruOnthe"
 SHARED_LEVEL = 45   # la base partagée contient des joueurs niveau 45
 
 
@@ -41,7 +54,7 @@ def download_shared(region: str, class_name: str) -> bool:
         return False
     name = f"{region}_{class_name.lower().replace(' ', '')}.json"
     try:
-        r = requests.get(SHARED_URL.format(owner=SHARED_OWNER, file=name), timeout=15)
+        r = requests.get(SHARED_URL.format(owner=SHARED_OWNER, file=name), timeout=90)
         if r.status_code != 200:
             return False
         db = r.json()
@@ -118,18 +131,28 @@ class Harvester:
         pcids = api.class_pcids(region, class_name)
         self._say("Recherche des joueurs", 0, 1, "Recherche des joueurs de ta classe au niveau max…")
         cands = {}
+        need_cands = int(SAMPLE_TARGET * 1.3)
         with ThreadPoolExecutor(24, thread_name_prefix="harvest") as ex:
-            futs = [ex.submit(api.search, region, kw, None, page, 40, pcids or None, "level", 86400)
-                    for kw in KEYWORDS for page in range(1, SEARCH_PAGES + 1)]
-            for i, f in enumerate(as_completed(futs)):
-                try:
-                    rows, _ = f.result()
-                except ApiError:
-                    continue
-                for r in rows:
-                    if (r.get("level") or 0) >= min_level and r.get("characterId"):
-                        cands.setdefault(r["characterId"], r)
-                self._say("Recherche des joueurs", i + 1, len(futs), f"{len(cands)} joueurs trouvés")
+            # page 1 de chaque mot-clé, puis page 2… : on s'arrête dès qu'on a assez de joueurs
+            plan = [(kw, page) for page in range(1, SEARCH_PAGES + 1) for kw in KEYWORDS]
+            ends, done_s = {}, 0
+            while plan and len(cands) < need_cands and not self.stop.is_set():
+                batch, plan = plan[:48], plan[48:]
+                batch = [(kw, p) for kw, p in batch if p <= ends.get(kw, p)]
+                futs = {ex.submit(api.search, region, kw, None, p, 40, pcids or None, "level", 86400): kw
+                        for kw, p in batch}
+                for f in as_completed(futs):
+                    done_s += 1
+                    try:
+                        rows, end = f.result()
+                    except ApiError:
+                        continue
+                    ends[futs[f]] = end
+                    for r in rows:
+                        if (r.get("level") or 0) >= min_level and r.get("characterId"):
+                            cands.setdefault(r["characterId"], r)
+                self._say("Recherche des joueurs", min(len(cands), need_cands), need_cands,
+                          f"{len(cands)} joueurs trouvés ({done_s} recherches)")
             todo = [r for cid, r in cands.items() if cid not in fresh][: max(0, SAMPLE_TARGET - len(fresh))]
             # --- 2. fiches + équipement
             total = len(todo)
@@ -165,10 +188,10 @@ class Harvester:
             if on_partial:
                 on_partial(db)
             # --- 3. détail des objets des meilleurs
-            best = sorted(fresh.values(), key=lambda s: -s["cp"])[:(TOP_N_MAX if db.get("top") else TOP_N)]
+            best = select_detail(list(fresh.values()), TOP_N_MAX if db.get("top") else TOP_N, DETAIL_SPREAD)
             top = {k: v for k, v in (db.get("top") or {}).items()
                    if k in {b["cid"] for b in best} and now - v.get("t", 0) < SAMPLE_TTL}
-            need = [s for s in best if s["cid"] not in top][:TOP_ADD if db.get("top") else TOP_N]
+            need = [s for s in best if s["cid"] not in top][:TOP_ADD if db.get("top") else len(best)]
             self._say("Builds des meilleurs", len(top), len(best), "Détail des objets des meilleurs joueurs")
             done = len(top)
 
@@ -202,7 +225,7 @@ class Harvester:
                         continue
                     if entry:
                         top[s["cid"]] = entry
-                        if len(top) in (3, 6) or len(top) % 5 == 0:
+                        if len(top) in (3, 6) or len(top) % (5 if len(need) < 40 else 25) == 0:
                             save_partial()
                     msg = f"{s['name']} ({s['cp']:,} CP)".replace(",", " ")
                     if api.limiter.rate < api.limiter.max_rate * 0.6:
@@ -294,3 +317,19 @@ def possible_stats(agg: dict | None, group: str) -> dict:
     """Stats déjà vues sur ce type de pièce chez les joueurs de la base : {norm(nom): (nom, unité, nb)}."""
     p = ((agg or {}).get("pools") or {}).get(group, {})
     return {norm(v["name"]): (v["name"], v["unit"], v["obs"]) for v in p.values()}
+
+
+def agg_for(db: dict, my_cp: int) -> dict | None:
+    """Agrégat de référence pour TES conseils : les ~50 builds détaillés juste au-dessus de ton CP
+    (ce qui marche à ton niveau), ou les meilleurs s'il y en a trop peu. Les stats possibles par
+    pièce viennent toujours de tous les builds détaillés."""
+    tops = list((db or {}).get("top", {}).values())
+    if not tops:
+        return (db or {}).get("agg")
+    above = sorted([t for t in tops if t["cp"] >= my_cp], key=lambda t: t["cp"])
+    ref = above[:50] if len(above) >= 15 else sorted(tops, key=lambda t: -t["cp"])[:50]
+    a = aggregate(ref)
+    a["pools"] = ((db.get("agg") or {}).get("pools")) or aggregate(tops)["pools"]
+    a["ref"] = {"n": len(ref), "lo": min(t["cp"] for t in ref), "hi": max(t["cp"] for t in ref),
+                "near": len(above) >= 15}
+    return a

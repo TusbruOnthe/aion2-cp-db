@@ -2,7 +2,7 @@ name: Collecte quotidienne des bases de classe
 
 on:
   schedule:
-    - cron: "17 5 * * *"   # chaque jour vers 5 h UTC
+    - cron: "17 1 * * *"   # chaque nuit vers 1 h UTC
   workflow_dispatch: {}
 
 permissions:
@@ -14,20 +14,36 @@ concurrency:
 
 jobs:
   collect:
+    name: ${{ matrix.cls }}
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 4        # 4 classes à la fois, pour rester raisonnable avec le site officiel
+      matrix:
+        include:
+          - { cls: Gladiator, file: gladiator }
+          - { cls: Templar, file: templar }
+          - { cls: Ranger, file: ranger }
+          - { cls: Assassin, file: assassin }
+          - { cls: Sorcerer, file: sorcerer }
+          - { cls: Spiritmaster, file: spiritmaster }
+          - { cls: Cleric, file: cleric }
+          - { cls: Chanter, file: chanter }
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install requests numpy
-      - run: python tools/collect_all.py --regions eu
-      - name: Publier les bases
-        if: always()   # on publie même si une classe a échoué : rien n'est perdu
+      - name: Base de la veille
+        run: gh release download data -p "eu_${{ matrix.file }}.json" -D db || echo "pas de base précédente"
+      - run: python tools/collect_all.py --regions eu --classes ${{ matrix.cls }}
+      - name: Publier
+        if: always()   # même en cas d'arrêt en route : ce qui a été lu est gardé
         run: |
-          git config user.name "aion2cp-bot"
-          git config user.email "aion2cp-bot@users.noreply.github.com"
-          git add db/
-          git diff --cached --quiet || git commit -m "Bases de classe du $(date -u +%F)"
-          git push
+          if [ -f db/eu_${{ matrix.file }}.json ]; then
+            gh release upload data db/eu_${{ matrix.file }}.json --clobber
+          fi

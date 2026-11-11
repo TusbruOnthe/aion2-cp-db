@@ -28,9 +28,11 @@ def main():
     api = AionAPI(cache_dir=os.path.join(ROOT, ".cache"), rate=6.0)  # débit prudent
     h = classdb.Harvester(api)
     # base partagée : bien plus large que la collecte locale (qui lit 160 joueurs)
-    classdb.SAMPLE_TARGET = int(os.environ.get("SAMPLE_TARGET", "1000"))
-    classdb.SEARCH_PAGES = 8
-    classdb.TOP_N = classdb.TOP_N_MAX = classdb.TOP_ADD = int(os.environ.get("TOP_N", "60"))
+    classdb.SAMPLE_TARGET = int(os.environ.get("SAMPLE_TARGET", "6000"))
+    classdb.SEARCH_PAGES = 30
+    classdb.TOP_N = classdb.TOP_N_MAX = int(os.environ.get("TOP_N", "80"))          # les meilleurs
+    classdb.DETAIL_SPREAD = int(os.environ.get("DETAIL_SPREAD", "170"))             # + répartis sur tous les CP
+    classdb.TOP_ADD = classdb.TOP_N + classdb.DETAIL_SPREAD
     os.makedirs(OUT, exist_ok=True)
     for region in a.regions.split(","):
         for cls in a.classes.split(","):
