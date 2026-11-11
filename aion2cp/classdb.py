@@ -246,10 +246,13 @@ class Harvester:
                     if entry:
                         old = prev_top.get(s["cid"])
                         if old:  # même joueur, nuit précédente : ce qui a changé et ce que ça a rapporté
-                            from .statcal import observe
+                            from .statcal import moves, observe
                             o = observe(old, entry, class_name)
                             if o:
                                 db.setdefault("obs", []).append(o)
+                            mv = moves(old, entry)
+                            if mv:
+                                db.setdefault("moves", []).append(mv)
                         top[s["cid"]] = entry
                         if len(top) in (3, 6) or len(top) % (5 if len(need) < 40 else 25) == 0:
                             save_partial()
@@ -265,6 +268,7 @@ class Harvester:
             arch = {k: v for k, v in arch.items() if k not in top and time.time() - v.get("t", 0) < ARCHIVE_DAYS * 86400}
             db["archive"] = dict(sorted(arch.items(), key=lambda kv: -kv[1].get("t", 0))[:ARCHIVE_MAX])
         db["obs"] = (db.get("obs") or [])[-OBS_MAX:]
+        db["moves"] = [m for m in (db.get("moves") or []) if time.time() - m["t"] < 30 * 86400][-6000:]
         db["t"] = time.time()
         write_json(db_path(region, class_name), db)
         self._say("Terminé", 1, 1, f"{len(fresh)} joueurs, {len(top)} builds détaillés")

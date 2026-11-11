@@ -251,3 +251,35 @@ def refine_with_obs(out: dict, obs: list[dict], prev: dict | None = None) -> dic
                     "maeNow": round(float(np.abs(A @ w_final - y).mean()))})
     res["quality"] = quality[-120:]
     return res
+
+
+def moves(old: dict, new: dict) -> dict | None:
+    """Ce qu'un joueur suivi a changé entre deux nuits, et le CP gagné (pour les tendances)."""
+    fo, fn = old.get("f"), new.get("f")
+    if not fo or not fn:
+        return None
+    ch = {}
+    for k, lab in (("ench_total", "enchant"), ("exceed", "exceed"), ("dae_nodes", "dae"), ("arcana_lvl", "arcana")):
+        d = fn.get(k, 0) - fo.get(k, 0)
+        if d > 0:
+            ch[lab] = d
+    go = {g["slot"]: g for g in old["gear"]}
+    pieces = [g["slot"] for g in new["gear"] if g["slot"] in go and go[g["slot"]]["name"] != g["name"]]
+    rolled = [g["slot"] for g in new["gear"] if g["slot"] in go and go[g["slot"]]["name"] == g["name"]
+              and [s[:2] for s in go[g["slot"]]["stats"]] != [s[:2] for s in g["stats"]]]
+    if pieces:
+        ch["gear"] = len(pieces)
+    if rolled:
+        ch["roll"] = len(rolled)
+    st = {n: lv - (old.get("stigmas") or {}).get(n, 0) for n, lv in (new.get("stigmas") or {}).items()
+          if lv > (old.get("stigmas") or {}).get(n, 0)}
+    sk = {n: lv - (old.get("skills") or {}).get(n, 0) for n, lv in (new.get("skills") or {}).items()
+          if n in (old.get("skills") or {}) and lv > old["skills"][n]}
+    if st:
+        ch["stigma"] = sum(st.values())
+    if sk:
+        ch["skill"] = sum(sk.values())
+    dcp = new["cp"] - old["cp"]
+    if not ch and dcp == 0:
+        return None
+    return {"t": round(new.get("t", 0)), "dcp": dcp, "ch": ch, "stigmas": st, "skills": sk, "pieces": pieces + rolled}
