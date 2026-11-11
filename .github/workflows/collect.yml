@@ -1,0 +1,32 @@
+name: Collecte quotidienne des bases de classe
+
+on:
+  schedule:
+    - cron: "17 5 * * *"   # chaque jour vers 5 h UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests numpy
+      - run: python tools/collect_all.py --regions eu
+      - name: Publier les bases
+        run: |
+          git config user.name "aion2cp-bot"
+          git config user.email "aion2cp-bot@users.noreply.github.com"
+          git add db/
+          git diff --cached --quiet || git commit -m "Bases de classe du $(date -u +%F)"
+          git push
