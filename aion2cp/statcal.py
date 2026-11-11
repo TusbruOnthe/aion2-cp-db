@@ -74,27 +74,62 @@ def family(k: str) -> str:
     return "off_flat" if any(n == x or n.startswith(x) for x in OFF_FLAT) else "def_flat"
 
 
+def totals(entry) -> dict:
+    """Somme de chaque stat sur toutes les lignes et pierres d'un build détaillé."""
+    x = defaultdict(float)
+    for g in entry["gear"]:
+        for name, v, u in g["stats"]:
+            if v is not None:
+                x[key(name, u)] += v
+        for name, v, _ in g["stones"]:
+            if v is not None:
+                x[key(name, "")] += v
+    return x
+
+
+SAME_F = ("ilvl", "stigma_lvl", "active_lvl", "passive_lvl", "dae_nodes", "titles", "arcana_lvl", "wing_ench",
+          "pet_lvl", "ench_total", "exceed")
+
+
+def observe(old: dict, new: dict, cls: str | None = None, max_days: float = 4) -> dict | None:
+    """« Avant/après » propre : entre deux lectures du même joueur, SEULES ses lignes et pierres ont
+    changé (mêmes objets, enchant, niveau d'objet, skills, stigmas, Daevanion, titres…). Le CP gagné
+    ou perdu vient alors de ces lignes : c'est une mesure presque directe de leur valeur."""
+    fo, fn = old.get("f"), new.get("f")
+    if not fo or not fn or new.get("t", 0) - old.get("t", 0) > max_days * 86400:
+        return None
+    if any(abs(fo.get(k, 0) - fn.get(k, 0)) > 1e-9 for k in SAME_F):
+        return None
+    go = {g["slot"]: (g["name"], g["ench"], g["exc"]) for g in old["gear"]}
+    gn = {g["slot"]: (g["name"], g["ench"], g["exc"]) for g in new["gear"]}
+    if go != gn or [a["skills"] for a in old.get("arcana", [])] != [a["skills"] for a in new.get("arcana", [])]:
+        return None
+    to, tn = totals(old), totals(new)
+    dx = {k: round(tn.get(k, 0) - to.get(k, 0), 3) for k in set(to) | set(tn)}
+    dx = {k: v for k, v in dx.items() if abs(v) > 1e-6}
+    dcp = new["cp"] - old["cp"]
+    if not dx:
+        return None
+    return {"t": round(new.get("t", 0)), "cls": cls, "dcp": dcp, "dx": dx}
+
+
 def build_rows(dbs: list[dict]):
+    """Builds détaillés du jour + archive des jours précédents (le plus récent par joueur)."""
     rows = []
     for db in dbs:
         samples = db.get("samples") or {}
-        for cid, t in (db.get("top") or {}).items():
-            s = samples.get(cid)
-            if not s:
+        entries = dict(db.get("archive") or {})
+        entries.update(db.get("top") or {})
+        for cid, t in entries.items():
+            f = t.get("f") or (samples.get(cid) or {}).get("f")
+            cp = t.get("cp") or (samples.get(cid) or {}).get("cp")
+            if not f or not cp:
                 continue
-            x = defaultdict(float)
-            for g in t["gear"]:
-                for name, v, u in g["stats"]:
-                    if v is not None:
-                        x[key(name, u)] += v
-                for name, v, _ in g["stones"]:
-                    if v is not None:
-                        x[key(name, "")] += v
-            rows.append((db.get("class"), s["cp"], s["f"], x))
+            rows.append((db.get("class"), cp, f, totals(t)))
     return rows
 
 
-def fit(dbs: list[dict], min_share: float = 0.03) -> dict:
+def fit(dbs: list[dict], min_share: float = 0.03, prev: dict | None = None) -> dict:
     rows = build_rows(dbs)
     if len(rows) < 200:
         raise ValueError("pas assez de builds détaillés")
@@ -165,5 +200,54 @@ def fit(dbs: list[dict], min_share: float = 0.03) -> dict:
         cw, cl, ch = combine(k, v), combine(k, l), combine(k, h)
         out[k] = {"w": round(cw, 3), "lo": round(min(cl, cw), 3), "hi": round(max(ch, cw), 3), "prior": prior(k),
                   "obs": int(cnt.get(k, len(rows))), "family": family(k) if k not in BASE else "base"}
+    # --- 3. les « avant/après » : mesure presque directe, qui s'accumule nuit après nuit
+    obs = [o for db in dbs for o in (db.get("obs") or [])]
+    info = refine_with_obs(out, obs, prev)
     return {"t": time.time(), "n": len(rows), "lambda": lam, "mae": round(best[0]),
-            "families": {k: round(float(v), 2) for k, v in fam_w.items()}, "weights": out}
+            "families": {k: round(float(v), 2) for k, v in fam_w.items()}, "weights": out, **info}
+
+
+OBS_FULL = 30  # à partir de 30 avant/après sur une stat, on fait confiance à cette mesure
+
+
+def refine_with_obs(out: dict, obs: list[dict], prev: dict | None = None) -> dict:
+    """Corrige chaque valeur avec les avant/après où cette stat a changé. Plus une stat a
+    d'observations, plus la mesure directe l'emporte sur la comparaison entre joueurs."""
+    obs = [o for o in obs if o.get("dx") and all(k in out for k in o["dx"])]
+    quality = list((prev or {}).get("quality") or [])
+    res = {"nObs": len(obs), "quality": quality}
+    if len(obs) < 20:
+        return res
+    keys = sorted({k for o in obs for k in o["dx"]})
+    A = np.array([[o["dx"].get(k, 0) for k in keys] for o in obs], float)
+    y = np.array([o["dcp"] for o in obs], float)
+    wc = np.array([out[k]["w"] for k in keys])
+    n_k = (A != 0).sum(0)
+    # erreur, hors échantillon, des valeurs de la veille sur les nouvelles observations
+    pw = (prev or {}).get("weights") or {}
+    new_obs = [i for i, o in enumerate(obs) if o["t"] > (prev or {}).get("t", 0)]
+    mae_prev = None
+    if pw and new_obs:
+        wp = np.array([(pw.get(k) or {}).get("w", out[k]["w"]) for k in keys])
+        mae_prev = float(np.abs(A[new_obs] @ wp - y[new_obs]).mean())
+    d = (A ** 2).sum(0) + 1e-9
+    # retenue forte avec peu de mesures, quasi nulle quand elles s'accumulent
+    u = np.linalg.solve(A.T @ A + np.diag(d * 3.0 / np.maximum(n_k, 1)), A.T @ (y - A @ wc))
+    wn = np.maximum(wc + u, 0)
+    for j, k in enumerate(keys):
+        trust = min(1.0, n_k[j] / OBS_FULL)
+        w = wc[j] + (wn[j] - wc[j]) * trust
+        if trust < 1 and out[k].get("family") in ("def_pct", "def_flat", "util"):
+            w = min(w, max(out[k]["prior"], wc[j]))  # pas encore assez de mesures : on garde le plafond
+        out[k]["w"] = round(float(w), 3)
+        out[k]["lo"] = round(min(out[k]["lo"], float(w)), 3)
+        out[k]["hi"] = round(max(out[k]["hi"], float(w)), 3)
+        out[k]["nObs"] = int(n_k[j])
+        if trust >= 1:
+            out[k]["direct"] = True
+    w_final = np.array([out[k]["w"] for k in keys])
+    quality.append({"t": round(time.time()), "nObs": len(obs), "newObs": len(new_obs),
+                    "maePrev": round(mae_prev) if mae_prev is not None else None,
+                    "maeNow": round(float(np.abs(A @ w_final - y).mean()))})
+    res["quality"] = quality[-120:]
+    return res

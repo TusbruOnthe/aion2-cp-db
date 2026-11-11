@@ -40,6 +40,10 @@ def select_detail(samples: list[dict], n_top: int, n_spread: int) -> list[dict]:
     return best
 MAX_AGE = 3 * 86400       # au-delà : mise à jour automatique
 SAMPLE_TTL = 6 * 86400    # un joueur relu au plus tous les 6 jours
+DETAIL_TTL = SAMPLE_TTL   # builds détaillés : la base partagée les relit CHAQUE nuit (avant/après)
+ARCHIVE_MAX = 0           # builds détaillés gardés en plus (base partagée : jusqu'à 1 000 au total)
+ARCHIVE_DAYS = 30
+OBS_MAX = 20000           # observations « avant/après » gardées par classe
 
 
 SHARED_URL = "https://github.com/{owner}/aion2-cp-db/releases/download/data/{file}"
@@ -101,6 +105,7 @@ def _top_entry(b: dict) -> dict:
                     "icon": a["icon"], "skills": [s["name"] for s in a["skills"]]} for a in b["arcana"]],
         "stigmas": {s["name"]: s["level"] for s in b["stigma"] if s["equip"]},
         "skills": {s["name"]: s["level"] for s in b["active"] + b["passive"] if s["acquired"]},
+        "f": b["features"],
     }
 
 
@@ -196,9 +201,16 @@ class Harvester:
             if on_partial:
                 on_partial(db)
             # --- 3. détail des objets des meilleurs
-            best = select_detail(list(fresh.values()), TOP_N_MAX if db.get("top") else TOP_N, DETAIL_SPREAD)
-            top = {k: v for k, v in (db.get("top") or {}).items()
-                   if k in {b["cid"] for b in best} and now - v.get("t", 0) < SAMPLE_TTL}
+            prev_top = dict(db.get("top") or {})
+            n_want = (TOP_N_MAX if prev_top else TOP_N) + DETAIL_SPREAD
+            best = select_detail(list(fresh.values()), TOP_N_MAX if prev_top else TOP_N, DETAIL_SPREAD)
+            if DETAIL_TTL < SAMPLE_TTL:
+                # suivi : on garde le même panel de joueurs d'une nuit à l'autre pour voir ce qui change
+                keep = [fresh[c] for c in prev_top if c in fresh]
+                ids = {s["cid"] for s in keep}
+                best = (keep + [s for s in best if s["cid"] not in ids])[:n_want]
+            top = {k: v for k, v in prev_top.items()
+                   if k in {b["cid"] for b in best} and now - v.get("t", 0) < DETAIL_TTL}
             need = [s for s in best if s["cid"] not in top][:TOP_ADD if db.get("top") else len(best)]
             self._say("Builds des meilleurs", len(top), len(best), "Détail des objets des meilleurs joueurs")
             done = len(top)
@@ -206,7 +218,7 @@ class Harvester:
             def full(s):
                 if self.stop.is_set():
                     return s, None
-                raw = api.load_full(region, s["cid"], s["sid"], ttl=SAMPLE_TTL, boards=False, pool=ex,
+                raw = api.load_full(region, s["cid"], s["sid"], ttl=DETAIL_TTL, boards=False, pool=ex,
                                     only_random=True)
                 b = make_build(raw, region)
                 want = sum(1 for g in b["gear"] if g["pos"] not in (17, 22, 23, 24)) + len(b["arcana"])
@@ -232,6 +244,12 @@ class Harvester:
                     except ApiError:
                         continue
                     if entry:
+                        old = prev_top.get(s["cid"])
+                        if old:  # même joueur, nuit précédente : ce qui a changé et ce que ça a rapporté
+                            from .statcal import observe
+                            o = observe(old, entry, class_name)
+                            if o:
+                                db.setdefault("obs", []).append(o)
                         top[s["cid"]] = entry
                         if len(top) in (3, 6) or len(top) % (5 if len(need) < 40 else 25) == 0:
                             save_partial()
@@ -241,6 +259,12 @@ class Harvester:
                     self._say("Builds des meilleurs", done, len(best), msg)
         db["top"] = top
         db["agg"] = aggregate(list(top.values()))
+        if ARCHIVE_MAX:  # les builds détaillés s'accumulent au fil des jours (pour mesurer la valeur des stats)
+            arch = dict(db.get("archive") or {})
+            arch.update({k: v for k, v in prev_top.items() if k not in top})
+            arch = {k: v for k, v in arch.items() if k not in top and time.time() - v.get("t", 0) < ARCHIVE_DAYS * 86400}
+            db["archive"] = dict(sorted(arch.items(), key=lambda kv: -kv[1].get("t", 0))[:ARCHIVE_MAX])
+        db["obs"] = (db.get("obs") or [])[-OBS_MAX:]
         db["t"] = time.time()
         write_json(db_path(region, class_name), db)
         self._say("Terminé", 1, 1, f"{len(fresh)} joueurs, {len(top)} builds détaillés")

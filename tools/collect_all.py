@@ -33,6 +33,8 @@ def main():
     classdb.TOP_N = classdb.TOP_N_MAX = int(os.environ.get("TOP_N", "80"))          # les meilleurs
     classdb.DETAIL_SPREAD = int(os.environ.get("DETAIL_SPREAD", "170"))             # + répartis sur tous les CP
     classdb.TOP_ADD = classdb.TOP_N + classdb.DETAIL_SPREAD
+    classdb.DETAIL_TTL = 20 * 3600   # le même panel est relu chaque nuit : on voit ce qui change
+    classdb.ARCHIVE_MAX = 750        # + builds des jours précédents : jusqu'à 1 000 par classe
     os.makedirs(OUT, exist_ok=True)
     for region in a.regions.split(","):
         for cls in a.classes.split(","):

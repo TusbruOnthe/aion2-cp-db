@@ -65,10 +65,34 @@ def stat_weight(name: str, unit: str):
     return v, v, v, False
 
 
+_PERSONAL = None
+
+
+def personal_factor() -> dict:
+    """Correction apprise sur TES avant/après : CP réellement gagné ÷ CP que l'appli prévoyait.
+    Prudente : il faut plusieurs mesures pour qu'elle s'éloigne de 1."""
+    global _PERSONAL
+    if _PERSONAL is None:
+        from .paths import read_json, usr
+        obs = [o for o in (read_json(usr("my_obs.json")) or []) if abs(o.get("pred") or 0) >= 200]
+        k = 1.0
+        if obs:
+            ratio = sum(o["dcp"] for o in obs) / sum(o["pred"] for o in obs)
+            n = len(obs)
+            k = max(0.6, min(1.6, (n * ratio + 3) / (n + 3)))
+        _PERSONAL = {"k": round(k, 3), "n": len(obs)}
+    return _PERSONAL
+
+
+def reset_personal():
+    global _PERSONAL
+    _PERSONAL = None
+
+
 def stat_cp(name: str, value, unit: str) -> float | None:
     if value is None:
         return None
-    return value * stat_weight(name, unit)[0]
+    return value * stat_weight(name, unit)[0] * personal_factor()["k"]
 
 
 def stat_cp_range(name: str, value, unit: str):

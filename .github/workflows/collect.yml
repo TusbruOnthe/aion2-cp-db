@@ -63,5 +63,6 @@ jobs:
           python-version: "3.12"
       - run: pip install numpy
       - run: gh release download data -p "eu_*.json" -D db
-      - run: python tools/calibrate.py db db/stat_weights.json
+      - run: gh release download data -p stat_weights.json -O prev_weights.json || echo "pas de valeurs précédentes"
+      - run: python tools/calibrate.py db db/stat_weights.json prev_weights.json
       - run: gh release upload data db/stat_weights.json --clobber
