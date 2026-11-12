@@ -91,6 +91,9 @@ SAME_F = ("ilvl", "stigma_lvl", "active_lvl", "passive_lvl", "dae_nodes", "title
           "pet_lvl", "ench_total", "exceed")
 
 
+MAX_LINE_DCP = 15000  # au-delà, un « avant/après » de lignes seules est forcément faux
+
+
 def observe(old: dict, new: dict, cls: str | None = None, max_days: float = 4) -> dict | None:
     """« Avant/après » propre : entre deux lectures du même joueur, SEULES ses lignes et pierres ont
     changé (mêmes objets, enchant, niveau d'objet, skills, stigmas, Daevanion, titres…). Le CP gagné
@@ -108,22 +111,25 @@ def observe(old: dict, new: dict, cls: str | None = None, max_days: float = 4) -
     dx = {k: round(tn.get(k, 0) - to.get(k, 0), 3) for k in set(to) | set(tn)}
     dx = {k: v for k, v in dx.items() if abs(v) > 1e-6}
     dcp = new["cp"] - old["cp"]
-    if not dx:
+    if not dx or abs(dcp) > MAX_LINE_DCP:  # changer des lignes ne peut pas rapporter autant : CP faux
         return None
     return {"t": round(new.get("t", 0)), "cls": cls, "dcp": dcp, "dx": dx}
 
 
 def build_rows(dbs: list[dict]):
-    """Builds détaillés du jour + archive des jours précédents (le plus récent par joueur)."""
+    """Builds détaillés du jour + archive des jours précédents (le plus récent par joueur).
+    Les CP faux renvoyés par le site (sans rapport avec l'item level) sont écartés."""
+    from .cpvalue import cp_fit, is_bogus
     rows = []
     for db in dbs:
         samples = db.get("samples") or {}
+        fit = cp_fit([(x.get("cp"), x.get("ilvl")) for x in samples.values()])
         entries = dict(db.get("archive") or {})
         entries.update(db.get("top") or {})
         for cid, t in entries.items():
             f = t.get("f") or (samples.get(cid) or {}).get("f")
             cp = t.get("cp") or (samples.get(cid) or {}).get("cp")
-            if not f or not cp:
+            if not f or not cp or is_bogus(cp, t.get("ilvl"), fit):
                 continue
             rows.append((db.get("class"), cp, f, totals(t)))
     return rows
@@ -281,5 +287,7 @@ def moves(old: dict, new: dict) -> dict | None:
         ch["skill"] = sum(sk.values())
     dcp = new["cp"] - old["cp"]
     if not ch and dcp == 0:
+        return None
+    if old["cp"] and abs(dcp) > 0.35 * old["cp"]:  # +/- 35 % en une nuit : CP faux renvoyé par le site
         return None
     return {"t": round(new.get("t", 0)), "dcp": dcp, "ch": ch, "stigmas": st, "skills": sk, "pieces": pieces + rolled}

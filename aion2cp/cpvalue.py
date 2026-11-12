@@ -236,3 +236,49 @@ def fmt_cp(v) -> str:
     if v is None:
         return "non mesurable"
     return f"{round(v):,}".replace(",", " ")
+
+
+# ------------------------------------------------------------------ CP aberrants
+# Le site officiel renvoie parfois un CP faux (ex. 393 117 pour des persos d'item level moyen).
+# On repère les CP sans rapport avec l'item level : ajustement robuste log(CP) ~ log(item level),
+# puis écart en nombre d'« écarts typiques » (MAD). Au-delà de BOGUS_Z, la valeur est ignorée.
+BOGUS_Z = 7.0
+_FITS: dict = {}
+
+
+def cp_fit(rows) -> tuple | None:
+    """rows = [(cp, ilvl)] -> (pente, ordonnée, écart typique robuste) ou None."""
+    pts = [(c, i) for c, i in rows if c and i and c > 0 and i > 0]
+    if len(pts) < 50:
+        return None
+    key = (len(pts), sum(c for c, _ in pts[:200]))
+    if key in _FITS:
+        return _FITS[key]
+    cp = np.log([c for c, _ in pts])
+    il = np.log([i for _, i in pts])
+    A = np.vstack([il, np.ones_like(il)]).T
+    w = np.ones(len(pts))
+    coef, mad = None, None
+    for _ in range(5):
+        coef, *_ = np.linalg.lstsq(A * w[:, None], cp * w, rcond=None)
+        r = cp - A @ coef
+        mad = float(np.median(np.abs(r - np.median(r)))) * 1.4826 or 1e-6
+        w = (np.abs(r) < 4 * mad).astype(float)
+    out = (float(coef[0]), float(coef[1]), mad)
+    if len(_FITS) > 50:
+        _FITS.clear()
+    _FITS[key] = out
+    return out
+
+
+def is_bogus(cp, ilvl, fit) -> bool:
+    if not fit or not cp or not ilvl or cp <= 0 or ilvl <= 0:
+        return False
+    a, b, s = fit
+    return abs(float(np.log(cp)) - (a * float(np.log(ilvl)) + b)) / s > BOGUS_Z
+
+
+def bogus_ids(entries: dict, fit=None) -> set:
+    """Clés des joueurs dont le CP n'a pas de sens au vu de leur item level."""
+    fit = fit or cp_fit([(e.get("cp"), e.get("ilvl")) for e in entries.values()])
+    return {k for k, e in entries.items() if is_bogus(e.get("cp"), e.get("ilvl"), fit)}

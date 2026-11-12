@@ -208,9 +208,12 @@ class Harvester:
             if on_partial:
                 on_partial(db)
             # --- 3. détail des objets des meilleurs
-            prev_top = dict(db.get("top") or {})
+            from .cpvalue import bogus_ids, cp_fit, is_bogus
+            fit = cp_fit([(x.get("cp"), x.get("ilvl")) for x in fresh.values()])
+            bad = bogus_ids(fresh, fit)  # CP renvoyé faux par le site : jamais parmi les « meilleurs »
+            prev_top = {k: v for k, v in (db.get("top") or {}).items() if not is_bogus(v.get("cp"), v.get("ilvl"), fit)}
             n_want = (TOP_N_MAX if prev_top else TOP_N) + DETAIL_SPREAD
-            best = select_detail(list(fresh.values()), TOP_N_MAX if prev_top else TOP_N, DETAIL_SPREAD)
+            best = select_detail([x for k, x in fresh.items() if k not in bad], TOP_N_MAX if prev_top else TOP_N, DETAIL_SPREAD)
             if DETAIL_TTL < SAMPLE_TTL:
                 # suivi : on garde le même panel de joueurs d'une nuit à l'autre pour voir ce qui change
                 keep = [fresh[c] for c in prev_top if c in fresh]
@@ -250,6 +253,8 @@ class Harvester:
                         s, entry = f.result()
                     except ApiError:
                         continue
+                    if entry and is_bogus(entry.get("cp"), entry.get("ilvl"), fit):
+                        entry = None  # CP faux renvoyé par le site cette nuit : on n'en tient pas compte
                     if entry:
                         old = prev_top.get(s["cid"])
                         if old:  # même joueur, nuit précédente : ce qui a changé et ce que ça a rapporté
